@@ -1,0 +1,17 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+db.sqlite3
+*.sqlite3
+media/
+staticfiles/
+logs/
+*.log
+.env
+node_modules/
+build/
+dist/
+.DS_Store
+backend/core/event_classifier/trained_model.pkl
+backend/core/event_classifier/vectorizer.pkl

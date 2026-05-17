@@ -1,0 +1,32 @@
+# Bengal RAWR — Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# ── Django & REST framework ──────────────────────────────────────────────
+Django==4.2.13
+djangorestframework==3.15.2
+django-cors-headers==4.3.1
+
+# ── Document parsing ─────────────────────────────────────────────────────
+pdfplumber==0.11.4          # PDF text extraction
+python-docx==1.1.2          # DOCX extraction
+Pillow==10.4.0              # Image handling (OCR support)
+pytesseract==0.3.13         # OCR fallback for scanned PDFs
+
+# ── NLP & date parsing ──────────────────────────────────────────────────
+spacy==3.7.5                # NLP model (run: python -m spacy download en_core_web_sm)
+dateparser==1.2.0           # Flexible date string parsing
+python-dateutil==2.9.0
+
+# ── Machine learning ─────────────────────────────────────────────────────
+scikit-learn==1.5.1         # ML classifier
+numpy==1.26.4
+scipy==1.13.1
+
+# ── Utilities ───────────────────────────────────────────────────────────
+python-decouple==3.8        # Environment variable management
+gunicorn==22.0.0            # Production WSGI server
+
+# ── Development ─────────────────────────────────────────────────────────
+# pytest==8.3.2
+# pytest-django==4.8.0
+# factory-boy==3.3.1

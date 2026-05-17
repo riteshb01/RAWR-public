@@ -1,0 +1,9 @@
+django
+djangorestframework
+django-cors-headers
+dateparser
+pdfplumber
+python-docx
+pillow
+pytesseract
+
