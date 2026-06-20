@@ -189,16 +189,29 @@ def extract_event_title(line: str, event_type: str) -> str:
     return title[:120]
 
 
+# Minimum ML confidence required to accept a classifier prediction.
+# Lines where the top label confidence is below this are treated as non-events.
+ML_CONFIDENCE_THRESHOLD = 0.65
+
+
 class SyllabusNLPEngine:
     """
     Main NLP engine that processes raw syllabus text and returns
     structured academic event records.
+
+    Detection strategy (two-pass per line):
+      1. Keyword heuristics via detect_event_type()  — fast, high precision
+      2. ML classifier fallback                      — catches lines keywords miss
+         (only if confidence >= ML_CONFIDENCE_THRESHOLD)
     """
 
-    def __init__(self, reference_year: int = None):
+    def __init__(self, reference_year: int = None, use_classifier: bool = True):
         self.reference_year = reference_year or datetime.now().year
         self.spacy_nlp = None
+        self.classifier = None
         self._try_load_spacy()
+        if use_classifier:
+            self._try_load_classifier()
 
     def _try_load_spacy(self):
         """Attempt to load spaCy model; degrade gracefully if unavailable."""
@@ -209,6 +222,16 @@ class SyllabusNLPEngine:
         except Exception as e:
             logger.warning(f"spaCy not available, using regex-only mode: {e}")
             self.spacy_nlp = None
+
+    def _try_load_classifier(self):
+        """Load the ML event classifier singleton; degrade gracefully if unavailable."""
+        try:
+            from core.event_classifier.classifier import get_classifier
+            self.classifier = get_classifier()
+            logger.info("ML classifier loaded into NLP engine")
+        except Exception as e:
+            logger.warning(f"ML classifier unavailable, keyword-only mode active: {e}")
+            self.classifier = None
 
     def _spacy_extract_dates(self, text: str) -> list:
         """Use spaCy NER to extract DATE entities for a higher recall pass."""
@@ -244,8 +267,28 @@ class SyllabusNLPEngine:
             if not line or len(line) < 5:
                 continue
 
-            # Step 1: Detect event type
+            # Step 1: Detect event type via keyword heuristics
             event_info = detect_event_type(line)
+
+            # Step 1b: ML classifier fallback — only fires when keywords miss
+            if event_info is None and self.classifier:
+                ml_label = self.classifier.predict(line)
+                if ml_label:
+                    proba = self.classifier.predict_proba(line)
+                    confidence = proba.get(ml_label, 0.0)
+                    if confidence >= ML_CONFIDENCE_THRESHOLD:
+                        event_info = {
+                            'event_type': ml_label,
+                            'weight': 1,  # conservative weight for ML-sourced hits
+                            'matched_keyword': None,
+                            'ml_confidence': round(confidence, 3),
+                            'source': 'ml_classifier',
+                        }
+                        logger.debug(
+                            f"ML classifier caught line (label={ml_label}, "
+                            f"confidence={confidence:.2f}): {line[:80]}"
+                        )
+
             if not event_info:
                 continue
 
@@ -261,30 +304,41 @@ class SyllabusNLPEngine:
                         break
 
             # Step 4: Produce event record for each date found
+            ml_confidence = event_info.get('ml_confidence')  # None for keyword hits
+            detection_source = event_info.get('source', 'keyword')
+
             if dates_found:
                 for raw_date_str, parsed_date in dates_found:
                     title = extract_event_title(line, event_info['event_type'])
-                    events.append({
+                    event_dict = {
                         'course': course_name,
                         'event_type': event_info['event_type'],
                         'title': title,
                         'date': parsed_date,
                         'weight': event_info['weight'],
                         'matched_keyword': event_info['matched_keyword'],
+                        'source': detection_source,
                         'raw_line': line[:300],
-                    })
+                    }
+                    if ml_confidence is not None:
+                        event_dict['ml_confidence'] = ml_confidence
+                    events.append(event_dict)
             else:
                 # Record event without a date (still useful for warnings)
                 title = extract_event_title(line, event_info['event_type'])
-                events.append({
+                event_dict = {
                     'course': course_name,
                     'event_type': event_info['event_type'],
                     'title': title,
                     'date': None,
                     'weight': event_info['weight'],
                     'matched_keyword': event_info['matched_keyword'],
+                    'source': detection_source,
                     'raw_line': line[:300],
-                })
+                }
+                if ml_confidence is not None:
+                    event_dict['ml_confidence'] = ml_confidence
+                events.append(event_dict)
 
         # Deduplicate events on same date with same type
         events = self._deduplicate_events(events)

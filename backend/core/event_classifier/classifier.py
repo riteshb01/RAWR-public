@@ -164,7 +164,6 @@ class EventClassifier:
             max_iter=1000,
             class_weight='balanced',
             solver='lbfgs',
-            multi_class='multinomial',
         )
         self.model.fit(X, y)
         self.is_trained = True
@@ -221,7 +220,7 @@ class EventClassifier:
         """
         try:
             # Import here to avoid circular imports
-            from apps.events.models import Event
+            from apps.syllabus.models import Event
 
             db_events = Event.objects.filter(is_verified=True).values('raw_line', 'event_type')
             training_data = [(e['raw_line'], e['event_type']) for e in db_events if e['raw_line']]
