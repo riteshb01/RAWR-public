@@ -189,6 +189,58 @@ def extract_event_title(line: str, event_type: str) -> str:
     return title[:120]
 
 
+# ─────────────────────────────────────────────
+# Grade percentage extraction
+# ─────────────────────────────────────────────
+
+# Matches patterns like: 25%, (25%), worth 25%, = 25%, : 25%
+# Captures the numeric value; validates range 1–100.
+GRADE_PERCENTAGE_REGEX = re.compile(
+    r'(?:worth|counts?\s+(?:for|as)|=|:|\()?\s*(\d{1,3}(?:\.\d+)?)\s*%',
+    re.IGNORECASE,
+)
+
+
+def extract_grade_percentage(line: str) -> Optional[float]:
+    """
+    Extract a grading percentage from a syllabus line.
+
+    Looks for patterns like:
+        "Midterm Exam — 25%"
+        "Homework (10% of final grade)"
+        "Final Exam: worth 40%"
+
+    Returns the percentage as a float (e.g. 25.0), or None if not found.
+    Only values in the range [1, 100] are accepted to filter false positives
+    (e.g. slide numbers, chapter references).
+    """
+    matches = GRADE_PERCENTAGE_REGEX.findall(line)
+    for match in matches:
+        try:
+            pct = float(match)
+            if 1.0 <= pct <= 100.0:
+                return pct
+        except ValueError:
+            continue
+    return None
+
+
+def grade_percentage_to_weight(percentage: float) -> float:
+    """
+    Convert a grade percentage to the internal workload weight scale (1–8).
+
+    Scaling: weight = percentage / 5
+        5%  → 1.0  (matches 'homework'  default)
+        10% → 2.0  (matches 'quiz'      default)
+        25% → 5.0  (matches 'midterm'   default)
+        40% → 8.0  (matches 'final'     default)
+
+    Result is clamped to [0.5, 10.0] to handle edge cases.
+    """
+    weight = round(percentage / 5, 1)
+    return max(0.5, min(weight, 10.0))
+
+
 # Minimum ML confidence required to accept a classifier prediction.
 # Lines where the top label confidence is below this are treated as non-events.
 ML_CONFIDENCE_THRESHOLD = 0.65
@@ -253,7 +305,10 @@ class SyllabusNLPEngine:
 
         Returns:
             List of dicts with keys:
-                course, event_type, title, date, weight, raw_line
+                course, event_type, title, date, weight, raw_line, source
+            Optional keys (present when data is available):
+                ml_confidence    — float, only on ML-sourced events
+                grade_percentage — float, only when a % was found on the line
         """
         if not text or not text.strip():
             logger.warning("Empty text passed to NLP engine")
@@ -307,6 +362,21 @@ class SyllabusNLPEngine:
             ml_confidence = event_info.get('ml_confidence')  # None for keyword hits
             detection_source = event_info.get('source', 'keyword')
 
+            # Step 4a: Check for an explicit grade percentage on this line.
+            # If found, override the default type-based weight with a
+            # percentage-derived weight so a 5% quiz and a 40% final are
+            # treated proportionally, not identically.
+            grade_pct = extract_grade_percentage(line)
+            final_weight = (
+                grade_percentage_to_weight(grade_pct)
+                if grade_pct is not None
+                else event_info['weight']
+            )
+            if grade_pct is not None:
+                logger.debug(
+                    f"Grade % found ({grade_pct}%) on line → weight={final_weight}: {line[:80]}"
+                )
+
             if dates_found:
                 for raw_date_str, parsed_date in dates_found:
                     title = extract_event_title(line, event_info['event_type'])
@@ -315,13 +385,15 @@ class SyllabusNLPEngine:
                         'event_type': event_info['event_type'],
                         'title': title,
                         'date': parsed_date,
-                        'weight': event_info['weight'],
+                        'weight': final_weight,
                         'matched_keyword': event_info['matched_keyword'],
                         'source': detection_source,
                         'raw_line': line[:300],
                     }
                     if ml_confidence is not None:
                         event_dict['ml_confidence'] = ml_confidence
+                    if grade_pct is not None:
+                        event_dict['grade_percentage'] = grade_pct
                     events.append(event_dict)
             else:
                 # Record event without a date (still useful for warnings)
@@ -331,13 +403,15 @@ class SyllabusNLPEngine:
                     'event_type': event_info['event_type'],
                     'title': title,
                     'date': None,
-                    'weight': event_info['weight'],
+                    'weight': final_weight,
                     'matched_keyword': event_info['matched_keyword'],
                     'source': detection_source,
                     'raw_line': line[:300],
                 }
                 if ml_confidence is not None:
                     event_dict['ml_confidence'] = ml_confidence
+                if grade_pct is not None:
+                    event_dict['grade_percentage'] = grade_pct
                 events.append(event_dict)
 
         # Deduplicate events on same date with same type

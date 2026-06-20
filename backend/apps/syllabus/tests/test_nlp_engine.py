@@ -10,6 +10,8 @@ from core.nlp_engine.engine import (
     extract_dates_from_line,
     parse_date_string,
     extract_event_title,
+    extract_grade_percentage,
+    grade_percentage_to_weight,
 )
 
 
@@ -390,3 +392,87 @@ class TestClassifierFallback:
         events = engine.process(text, course_name="CS101")
         finals = [e for e in events if e['event_type'] == 'final']
         assert len(finals) >= 1  # keyword path still works fine
+
+
+# ─────────────────────────────────────────────────────
+# Grade Percentage Extraction
+# ─────────────────────────────────────────────────────
+
+class TestGradePercentageExtraction:
+    """Tests for extract_grade_percentage() and grade_percentage_to_weight()."""
+
+    # —— extract_grade_percentage ——
+
+    def test_extracts_simple_percentage(self):
+        assert extract_grade_percentage("Midterm Exam — 25%") == 25.0
+
+    def test_extracts_percentage_in_parens(self):
+        assert extract_grade_percentage("Homework (10% of final grade)") == 10.0
+
+    def test_extracts_worth_pattern(self):
+        assert extract_grade_percentage("Final Exam: worth 40%") == 40.0
+
+    def test_extracts_decimal_percentage(self):
+        assert extract_grade_percentage("Quizzes 7.5%") == 7.5
+
+    def test_returns_none_when_no_percentage(self):
+        assert extract_grade_percentage("Midterm Exam March 15") is None
+
+    def test_ignores_zero_percent(self):
+        """0% is not a valid grade weight — should be rejected."""
+        assert extract_grade_percentage("Extra credit 0%") is None
+
+    def test_ignores_over_100_percent(self):
+        """Values > 100 are not realistic grade percentages."""
+        assert extract_grade_percentage("Slide 105% uptime") is None
+
+    # —— grade_percentage_to_weight ——
+
+    def test_weight_scaling_homework(self):
+        """5% → 1.0 (matches homework default)."""
+        assert grade_percentage_to_weight(5.0) == 1.0
+
+    def test_weight_scaling_quiz(self):
+        """10% → 2.0 (matches quiz default)."""
+        assert grade_percentage_to_weight(10.0) == 2.0
+
+    def test_weight_scaling_midterm(self):
+        """25% → 5.0 (matches midterm default)."""
+        assert grade_percentage_to_weight(25.0) == 5.0
+
+    def test_weight_scaling_final(self):
+        """40% → 8.0 (matches final default)."""
+        assert grade_percentage_to_weight(40.0) == 8.0
+
+    def test_weight_clamped_at_minimum(self):
+        """Very small percentages clamp to 0.5, not zero."""
+        assert grade_percentage_to_weight(1.0) >= 0.5
+
+    # —— End-to-end: grade percentage overrides default weight in pipeline ——
+
+    def test_pipeline_uses_grade_percentage_as_weight(self):
+        """
+        When a syllabus line contains an explicit percentage, the engine must
+        use the derived weight instead of the hard-coded event-type default.
+        """
+        engine = SyllabusNLPEngine(reference_year=2026, use_classifier=False)
+        # Midterm default weight = 5; 30% → derived weight = 6.0
+        text = "Midterm Exam 30% — March 15, 2026"
+        events = engine.process(text, course_name="CS101")
+        midterms = [e for e in events if e['event_type'] == 'midterm']
+        assert len(midterms) >= 1
+        assert midterms[0]['weight'] == 6.0          # percentage-derived
+        assert midterms[0]['grade_percentage'] == 30.0
+
+    def test_pipeline_falls_back_to_default_weight_when_no_percentage(self):
+        """
+        When no percentage is on the line, weight must equal the hard-coded
+        event-type default (midterm = 5).
+        """
+        engine = SyllabusNLPEngine(reference_year=2026, use_classifier=False)
+        text = "Midterm Exam — March 15, 2026"
+        events = engine.process(text, course_name="CS101")
+        midterms = [e for e in events if e['event_type'] == 'midterm']
+        assert len(midterms) >= 1
+        assert midterms[0]['weight'] == 5            # unchanged default
+        assert 'grade_percentage' not in midterms[0]
